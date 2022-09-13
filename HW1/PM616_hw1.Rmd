@@ -1,0 +1,262 @@
+---
+title: "PM616_HW1"
+author: "Nicky Nie"
+date: "2022-08-31"
+output: pdf_document
+---
+
+# question1: titanic
+```{r warning=FALSE}
+library(titanic)
+library(keras)
+library(data.table)
+library(dplyr)
+library(Hmisc)
+
+train_original <- titanic_train
+test_original <- titanic_test
+```
+
+## data cleaning for trainset
+```{r}
+summary(train_original)
+```
+
+
+```{r}
+# remove features not use in the model
+train <- subset(train_original, select = -c(PassengerId, Name, Ticket, Cabin))
+```
+
+```{r}
+# deal with sex, no NAs, just convert into numeric
+summary(as.factor(train$Sex))
+train$Sex <- unclass(as.factor(train$Sex))-1 # 1 is male and 0 is female
+```
+
+```{r}
+# deal with embarked, 2 empty, convert into NAs and imputed with median
+train$Embarked <- as.factor(train$Embarked) 
+summary(train$Embarked)
+train$Embarked <- na_if(train$Embarked, "")
+summary(train$Embarked)
+train$Embarked <- impute(train$Embarked, median)
+summary(train$Embarked)
+train$Embarked <- unclass(train$Embarked)-1 # 3=S, 2=Q, 1=C
+```
+
+
+```{r}
+# deal with age
+summary(train$Age)
+
+# see all decimal 
+is.wholenumber <-
+    function(x, tol = .Machine$double.eps^0.5)  abs(x - round(x)) < tol
+
+decimal_age_id <- which(is.wholenumber(train$Age)==FALSE)
+
+for (i in decimal_age_id){
+  print(train$Age[i])
+}
+
+# see whether age smaller than 1 is reasonable
+# since all have at least one parch, reasonable and no change
+baby_age_id <- which(train$Age<1)
+for (i in baby_age_id){
+  print(train[i,])
+}
+
+# replace all NAs with mean age
+train$Age <- impute(train$Age, mean)
+
+train$Age <- train$Age/80
+summary(train$Age)
+```
+
+```{r}
+train$Fare <- train$Fare/max(train$Fare)
+train$SibSp <- train$SibSp/8
+train$Parch <- train$Parch/9
+```
+
+```{r}
+train_categorical <- subset(train, select = c("Pclass","Sex","Embarked"))
+train_numerical <- subset(train, select = c("Age", "SibSp","Fare", "Parch"))
+```
+
+```{r}
+oneHot <- function(df){
+  output_df <- matrix(numeric(0), nrow = nrow(df), ncol = 1)
+  
+  for (col in colnames(df)) {
+    to_bind <- to_categorical(df %>% pull(col))
+    colnames(to_bind) <- paste0(col, 1:ncol(to_bind))
+    output_df <- cbind(output_df, to_bind)
+  }
+  output_df[,-1]
+}
+train_categorical<-oneHot(train_categorical)
+train <- data.frame(train$Survived, train_categorical,train_numerical)
+```
+
+
+## data cleaning for testset
+```{r}
+# remove features not use in the model
+test <- subset(test_original, select = -c(PassengerId, Name, Ticket, Cabin))
+summary(test)
+```
+
+```{r}
+# deal with sex, no NAs, just convert into numeric
+summary(as.factor(test$Sex))
+test$Sex <- unclass(as.factor(test$Sex))-1 # 1 is male and 0 is female
+```
+
+```{r}
+# deal with embarked, 2 empty, convert into NAs and imputed with median
+test$Embarked <- as.factor(test$Embarked) 
+summary(test$Embarked)
+test$Embarked<-unclass(test$Embarked)# 3=S, 2=Q, 1=C
+```
+
+
+```{r}
+# deal with age
+summary(test$Age)
+
+# see all decimal 
+decimal_age_id2 <- which(is.wholenumber(test$Age)==FALSE)
+
+for (i in decimal_age_id2){
+  print(test$Age[i])
+}
+
+# see whether age smaller than 1 is reasonable
+# since all have at least one parch, reasonable and no change
+baby_age_id2 <- which(test$Age<1)
+for (i in baby_age_id2){
+  print(test[i,])
+}
+
+# replace all NAs with mean age
+test$Age <- impute(test$Age, mean)
+test$Age <- test$Age/80
+
+summary(test$Age)
+```
+
+```{r}
+# deal with NAs in Fare
+test$Fare<-impute(test$Fare,mean)
+```
+
+```{r}
+test$Fare <- test$Fare/max(train_original$Fare)
+test$SibSp <- test$SibSp/8
+test$Parch <- test$Parch/9
+```
+
+```{r}
+test_categorical <- subset(test, select = c("Pclass","Sex","Embarked"))
+test_numerical <- subset(test, select = c("Age", "SibSp","Fare", "Parch"))
+
+test_categorical<-oneHot(test_categorical)
+test <- data.matrix(data.frame(test_categorical,test_numerical))
+```
+
+
+# split trainset into trainset and validation set
+```{r}
+set.seed(2022)
+sample <- sample(1:dim(train)[1], floor(0.8*dim(train)[1]))
+trainset  <- train[sample, ]
+validset   <- train[-sample, ]
+train_labels<-data.matrix(subset(trainset, select = c("train.Survived")))
+trainset <- data.matrix(trainset[,2:15])
+valid_labels<-data.matrix(subset(validset, select = c("train.Survived")))
+validset <- data.matrix(validset[,2:15])
+```
+
+
+# model
+```{r}
+network <- keras_model_sequential() %>% 
+  layer_dense(units = 128, activation = "relu", input_shape = c(14)) %>% 
+  layer_dropout(0.3) %>%
+  layer_dense(units = 64, activation = "relu") %>% 
+  layer_dropout(0.1) %>%
+  layer_dense(units = 16, activation = "relu") %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+```
+
+```{r warning=FALSE}
+network %>% compile(
+  optimizer = optimizer_rmsprop(lr=0.001),
+  loss = "binary_crossentropy",
+  metrics = c("accuracy")
+)
+```
+
+```{r}
+modhistory = network %>% fit(trainset, train_labels,
+                             epochs = 50, batch_size=100,
+                             validation_data = list(validset, valid_labels))
+```
+```{r}
+plot(modhistory)
+```
+```{r}
+test_pred = network %>% predict(test)
+```
+```{r}
+predict_result <- data.frame(test_original$PassengerId,round(test_pred,0))
+rename(predict_result, c("PassengerId"="test_original.PassengerId","Survived"="round.test_pred..0."))
+```
+# question 2
+```{r}
+set.seed(2022)
+y <- sample(0:1, size=1000, replace=TRUE)
+x1 <- rnorm(1000, mean = 0, sd = 1)
+x2 <- rnorm(1000, mean = 0, sd = 1)
+x3 <- rnorm(1000, mean = 0, sd = 1)
+x4 <- rnorm(1000, mean = 0, sd = 1)
+sim_data <- data.frame(y,x1,x2,x3,x4)
+sample <- sample(1:1000, floor(0.8*1000))
+sim_train  <- sim_data[sample, ]
+sim_test   <- sim_data[-sample, ]
+```
+
+## logistic regression
+```{r}
+log_model <- glm(y~x1+x2+x3+x4, family="binomial", data=sim_train)
+log_pred <- round(predict(log_model, sim_test, type = "response"),0)
+log_accuracy <- sum(diag(table(log_pred,sim_test$y)))/200
+log_accuracy
+```
+## ANN without hidden layer
+```{r}
+set.seed(2022)
+sim_train_label <- to_categorical(sim_train[,1])
+sim_train <- data.matrix(sim_train[,2:5])
+sim_test_label <- to_categorical(sim_test[,1])
+sim_test <- data.matrix(sim_test[,2:5])
+
+sim_ann <- keras_model_sequential() %>% 
+  layer_dense(units = 2, activation = "softmax", input_shape = c(4))
+
+sim_ann %>% compile(
+  optimizer = optimizer_adam(learning_rate=0.05),
+  loss = "categorical_crossentropy",
+  metrics = c("accuracy"))
+
+model_his= sim_ann %>% fit(sim_train, sim_train_label, 
+                             validation_data = list(sim_test, sim_test_label))
+
+ann_pred = round(sim_ann %>% predict(sim_test),0)
+ann_accuracy<-sum(diag(table(ann_pred[,1],sim_test_label[,1])))/200
+ann_accuracy
+```
+The accuracy result is very similar for ANN without hidden layer with softmax as the activation function(0.56) to logistic regression(0.575). In my opinion, the difference in final results here is caused by randomness from the ann algorithm.
+
